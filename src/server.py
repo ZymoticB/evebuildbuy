@@ -2,6 +2,9 @@ from tornado import ioloop
 from tornado import web
 from torndb import Connection
 import json
+import logging
+
+import settings
 
 from item.item import ItemFactory
 
@@ -16,7 +19,8 @@ class ItemHandler(BaseHandler):
         self.write(json.dumps(item_dict, indent=4))
 
 if __name__ == "__main__":
-    db = Connection('localhost', 'evedump', user='eve', password='4Td#xA3c.0)J;Ni_k$(E')
+    logging.getLogger().setLevel(logging.INFO)
+    db = Connection('localhost', 'evedump', user=settings.MYSQL_USER, password=settings.MYSQL_PASSWORD)
     application = web.Application([(r"/item/(?P<item>[a-zA-Z_]+)/?", ItemHandler, dict(db=db))])
-    application.listen(6968)
+    application.listen(6969)
     ioloop.IOLoop.instance().start()
