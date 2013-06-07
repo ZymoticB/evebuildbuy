@@ -34,28 +34,32 @@ ITEM_CACHE={}
 class UnknownItemException(Exception):
     pass
 
-def ItemFactory(db, name):
-    if name in ITEM_CACHE:
-        return ITEM_CACHE[name]
-    else:
-        item = ManufacturableItem(db, name)
-        ITEM_CACHE[name] = item
-        return item
+def ItemFactory(db, name, me=0, pe=5, cache=True, part_me=0):
+    if name in ITEM_CACHE and cache:
+        item = ITEM_CACHE[name]
+        if item.me == me and item.part_me == part_me:
+            return ITEM_CACHE[name]
+        else:
+            #recreate
+            pass
+    item = ManufacturableItem(db, name, me=me, pe=pe, part_me=part_me)
+    ITEM_CACHE[name] = item
+    return item
 
 
 class ManufacturableItem(object):
 
-    def __init__(self, db, name, source="sell", me=0, pe=5):
+    def __init__(self, db, name, source="sell", me=0, pe=5, part_me=0):
         print "start: " + name
         if "_" in name:
             self.name = name.replace('_', ' ')
         else:
             self.name = name
-        print name,self.name
         self.db = db
         self.source = source
         self.me = me
         self.pe = pe
+        self.part_me = part_me
         self.is_jf = self.name in ['ark', 'rhea', 'ahshar', 'nomad']
         _info_query = self.db.get(ITEM_INFO_QUERY, self.name)
         if _info_query is None:
@@ -81,7 +85,13 @@ class ManufacturableItem(object):
         cost = self.cost
         profit = self.profit
         minerals = self.minerals
-        parts = [part["part"].to_dict() for part in self.parts]
+        parts = []
+        for part in self.parts:
+            parts.append({
+                "name": part['name'],
+                "quantity": part['quantity'],
+                "part": part['part'].to_dict(),
+            })
         return {
             "minsell": minsell,
             "maxbuy": maxbuy,
@@ -96,8 +106,18 @@ class ManufacturableItem(object):
     def base_parts(self):
         if not hasattr(self, '_base_parts'):
             parts = self.db.query(REPROCESS_QUERY, self.id)
-            self._base_parts = [(ItemFactory(self.db,p.typeName), p.quantity) for p in parts]
+            self._base_parts = [(ItemFactory(self.db, p.typeName, me=self.part_me), p.quantity) for p in parts]
         return self._base_parts
+
+    def after_waste(self, base):
+        pe_waste_factor = (25 - (5*self.pe))/100.0
+        if self.me>=0:
+            me_waste_factor = self.waste_factor/100.0*(1/float(self.me+1))
+        else:
+            me_waste_factor = self.waste_factor/100.0*float(1-self.me)
+        total_waste = round(pe_waste_factor * base) + round(me_waste_factor * base)
+        print "base: %s waste %s" %(base, total_waste)
+        return int(round(base + total_waste))
 
     @property
     def minerals(self):
@@ -105,21 +125,13 @@ class ManufacturableItem(object):
             if self.categoryID == 4:
                 self._minerals = Counter()
             else:
-                print self.name
-                pe_waste_factor = (25 - (5*self.pe))/100.0
-                if self.me>=0:
-                    me_waste_factor = self.waste_factor/100.0*(1/float(self.me+1))
-                else:
-                    me_waste_factor = self.waster_factor/100.0*float(1-self.me)
                 minerals = Counter()
                 for part in self.parts:
                     if part['part'].categoryID == 4:
-                        total_waste = round(pe_waste_factor*part['quantity']) + round(me_waste_factor*part['quantity'])
-                        minerals.update({part['name']: total_waste+part['quantity']})
+                        minerals.update({part['name']: part['quantity']})
                     else:
                         quantity = part['quantity']
-                        total_waste = round(pe_waste_factor*quantity) + round(me_waste_factor*quantity)
-                        for i in range(int(round(total_waste+quantity))):
+                        for i in range(quantity):
                             minerals.update(part['part'].minerals)
                 self._minerals = minerals
         return self._minerals
@@ -137,18 +149,18 @@ class ManufacturableItem(object):
             for mat in _all:
                 if mat.categoryID == 16:
                     #this is a skill
-                    extra_mats["skills"].append((ItemFactory(self.db, mat.typeName), mat.quantity))
+                    extra_mats["skills"].append((ItemFactory(self.db, mat.typeName, me=self.part_me), mat.quantity))
                 elif mat.recycle:
                     #this is a T1 required by a T2. We need to delete the reprocess cost from mat cost
-                    extra_mats["recycle"].append((ItemFactory(self.db, mat.typeName), mat.quantity))
+                    extra_mats["recycle"].append((ItemFactory(self.db, mat.typeName, me=self.part_me), mat.quantity))
                 else:
                     #Just a normal extra mat
                     if mat.categoryID == 17:
                         #This is a "commodity" so something we can calc profit on aka part
-                        extra_mats["parts"].append((ItemFactory(self.db, mat.typeName), mat.quantity, mat.damagePerJob))
+                        extra_mats["parts"].append((ItemFactory(self.db, mat.typeName, me=self.part_me), mat.quantity, mat.damagePerJob))
                     elif mat.categoryID == 4:
                         #This is a mineral
-                        extra_mats["minerals"].append((ItemFactory(self.db, mat.typeName), mat.quantity, mat.damagePerJob))
+                        extra_mats["minerals"].append((ItemFactory(self.db, mat.typeName, me=self.part_me), mat.quantity, mat.damagePerJob))
             self._extra_materials = extra_mats
         return self._extra_materials
 
@@ -182,25 +194,27 @@ class ManufacturableItem(object):
                 parts = []
                 minerals_to_remove = defaultdict(int)
                 for item,quantity in self.extra_materials['recycle']:
+                    #Assume pe5 for extra material waste
                     for part in item.parts:
                         if self.is_jf:
                             parts.append(part)
                         minerals_to_remove[part['name']] += part['quantity']
 
                 for part,quantity in self.base_parts:
+                    quantity = self.after_waste(quantity)
                     if part.name in minerals_to_remove:
                         new_total = quantity - minerals_to_remove[part.name]
                         if new_total > 0:
                             parts.append({
                                 "name": part.name,
                                 "quantity": new_total,
-                                "part": ItemFactory(self.db, part.name)
+                                "part": ItemFactory(self.db, part.name, me=self.part_me)
                             })
                     else:
                         parts.append({
                             "name": part.name,
                             "quantity": quantity,
-                            "part": ItemFactory(self.db, part.name)
+                            "part": ItemFactory(self.db, part.name, me=self.part_me)
                         })
 
                 for part,quantity,damage in self.extra_materials['parts']:
@@ -209,7 +223,7 @@ class ManufacturableItem(object):
                     parts.append({
                         "name": part.name,
                         "quantity": quantity,
-                        "part": ItemFactory(self.db, part.name)
+                        "part": ItemFactory(self.db, part.name, me=self.part_me)
                     })
 
                 for part,quantity,__damage in self.extra_materials['minerals']:
@@ -217,7 +231,7 @@ class ManufacturableItem(object):
                     parts.append({
                         "name": part.name,
                         "quantity": quantity,
-                        "part": ItemFactory(self.db, part.name)
+                        "part": ItemFactory(self.db, part.name, me=self.part_me)
                     })
 
                 self._parts = parts
@@ -231,27 +245,18 @@ class ManufacturableItem(object):
                 self._cost = self.minsell
             else:
                 total = 0
-                pe_waste_factor = (25 - (5*self.pe))/100.0
-                if self.me>=0:
-                    me_waste_factor = self.waste_factor/100.0*(1/float(self.me+1))
-                else:
-                    me_waste_factor = self.waster_factor/100.0*float(1-self.me)
                 if self.source=='sell':
                     for part in self.parts:
                         item_name = part['name']
                         quantity = part['quantity']
-                        item = ItemFactory(self.db, item_name)
-                        total_waste = round(pe_waste_factor*quantity) + round(me_waste_factor*quantity)
-                        print "item: " + item_name + " waste: " + str(total_waste) + " cost: " + str(item.minsell)
-                        total += item.minsell * (quantity+total_waste)
+                        item = ItemFactory(self.db, item_name, me=self.part_me)
+                        total += item.minsell * (quantity)
                 if self.source=='buy':
                     for part in self.parts:
                         item_name = part['name']
                         quantity = part['quantity']
-                        item = ItemFactory(self.db, item_name)
-                        total_waste = round(pe_waste_factor*quantity) + round(me_waste_factor*quantity)
-                        print "item: " + item_name + " waste: " + str(total_waste) + " cost: " + str(item.minsell)
-                        total += item.minsell * (quantity+total_waste)
+                        item = ItemFactory(self.db, item_name, me=self.part_me)
+                        total += item.minsell * (quantity)
                 self._cost = total
         return self._cost
 

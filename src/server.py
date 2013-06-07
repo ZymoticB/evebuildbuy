@@ -14,7 +14,11 @@ class BaseHandler(web.RequestHandler):
 
 class ItemHandler(BaseHandler):
     def get(self, item):
-        item = ItemFactory(self.db, item)
+        me = int(self.get_argument('me', 0))
+        cache = bool(self.get_argument('cache', True))
+        part_me = int(self.get_argument('part_me', 0))
+        logging.info("me: %s, cache: %s", me, cache)
+        item = ItemFactory(self.db, item, me=me, cache=cache, part_me=me)
         item_dict = item.to_dict()
         self.write(json.dumps(item_dict, indent=4))
 
