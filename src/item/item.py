@@ -3,6 +3,7 @@ import requests
 
 import xml.etree.ElementTree as ET
 from collections import defaultdict, Counter
+import constants
 
 REPROCESS_QUERY = """
     SELECT t2.typeName,t2.typeID,t1.quantity
@@ -21,7 +22,7 @@ EXTRA_MAT_QUERY = """
     WHERE r.typeID=%s AND r.activityID='1'
     """
 ITEM_INFO_QUERY = """
-    SELECT t.typeID, g.categoryID, g.groupID
+    SELECT t.typeID, t.volume, g.categoryID, g.groupID, g.groupName
     FROM invTypes as t
       INNER JOIN invGroups as g
         ON (t.groupID = g.groupID)
@@ -50,11 +51,11 @@ def ItemFactory(db, name, me=0, pe=5, cache=True, part_me=0):
 class ManufacturableItem(object):
 
     def __init__(self, db, name, source="sell", me=0, pe=5, part_me=0):
-        print "start: " + name
         if "_" in name:
             self.name = name.replace('_', ' ')
         else:
             self.name = name
+        print "start: " + name
         self.db = db
         self.source = source
         self.me = me
@@ -67,6 +68,11 @@ class ManufacturableItem(object):
         self.id = _info_query.typeID
         self.groupID = _info_query.groupID
         self.categoryID = _info_query.categoryID
+        self.groupName = _info_query.groupName
+	try:
+        	self.packaged_size = constants.PACKAGED_SIZE[self.groupName]
+	except KeyError:
+		self.packaged_size = _info_query.volume
         _blueprint_query = self.db.get("SELECT blueprintTypeID,wasteFactor FROM invBlueprintTypes WHERE productTypeID=%s", self.id)
         if _blueprint_query is None:
             #probably a base material, that is cool
@@ -99,6 +105,7 @@ class ManufacturableItem(object):
             "profit": profit,
             "parts": parts,
             "minerals": minerals,
+            "packaged_size": self.packaged_size,
             "name": self.name
         }
 
@@ -129,6 +136,9 @@ class ManufacturableItem(object):
                 for part in self.parts:
                     if part['part'].categoryID == 4:
                         minerals.update({part['name']: part['quantity']})
+                    if part['part'].categoryID == 43:
+                        #PI Part. Just ignore in this calc
+                        pass
                     else:
                         quantity = part['quantity']
                         for i in range(quantity):
@@ -187,8 +197,8 @@ class ManufacturableItem(object):
     @property
     def parts(self):
         if not hasattr(self, '_parts'):
-            if self.categoryID == 4:
-                #This is a mineral
+            if self.categoryID == 4 or self.categoryID == 43:
+                #This is a mineral or a PI result
                 self._parts = []
             else:
                 parts = []
