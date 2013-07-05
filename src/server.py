@@ -3,6 +3,7 @@ from tornado import web
 from torndb import Connection
 import json
 import logging
+import os.path
 
 import settings
 
@@ -17,7 +18,7 @@ class ItemHandler(BaseHandler):
         me = int(self.get_argument('me', 0))
         cache = bool(self.get_argument('cache', True))
         part_me = int(self.get_argument('part_me', 0))
-	logging.info("item: %s", item)
+        logging.info("item: %s", item)
         logging.info("me: %s, cache: %s", me, cache)
         item = ItemFactory(self.db, item, me=me, cache=cache, part_me=me)
         item_dict = item.to_dict()
@@ -26,6 +27,12 @@ class ItemHandler(BaseHandler):
 if __name__ == "__main__":
     logging.getLogger().setLevel(logging.INFO)
     db = Connection('localhost', 'evedump', user=settings.MYSQL_USER, password=settings.MYSQL_PASSWORD)
-    application = web.Application([(r"/item/(?P<item>[a-zA-Z0-9_]+)/?", ItemHandler, dict(db=db))])
+    path = os.path.join(os.path.dirname(__file__), "static")
+    logging.info("path: %s", path)
+    routes = [
+            (r"/static/(.*)", web.StaticFileHandler, {"path": os.path.join(os.path.dirname(__file__), "static")}),
+            (r"/item/(?P<item>[a-zA-Z0-9_]+)/?", ItemHandler, dict(db=db))
+            ]
+    application = web.Application(routes)
     application.listen(6969)
     ioloop.IOLoop.instance().start()

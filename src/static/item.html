@@ -1,0 +1,34 @@
+<div class="container">
+	<div class="masthead">
+		<ul class="nav nav-pills pull-right">
+			<li class="active"><a href="#/item">Manufacturing</a></li>
+			<li><a href="#/contact">Contact</a></li>
+		</ul>
+		<h3 class="muted"><a href="#/">Tool Emporium</a></h3>
+	</div>
+	
+	<hr>
+	<div class="row" ng-controller="ItemCtrl">
+		<div class="span3">
+			<label>Item:</label>
+			<input type="text" ng-model="itemName" placeholder="Item Name">
+			<label>Item ME:</label>
+			<input type="text" ng-model="itemME">
+			<label>Part ME:</label>
+			<input type="text" ng-model="partME">
+		</div>
+		<div class="span9">
+			<h3> {{itemName}} </h3>
+			<p>ME: {{itemME}} PE: 5</p>
+			<ul>
+				<li>Part 1: ME: {{partME}} PE: 5</li>
+			<ul>
+		</div>
+	</div>
+
+	<hr>
+
+	<div class="footer">
+		<p>&copy; Zymoticb 2013</p>
+	</div>
+</div> <!-- /container -->
