@@ -1,9 +1,10 @@
 import sys
 import requests
 
-import xml.etree.ElementTree as ET
 from collections import defaultdict, Counter
 import constants
+
+from .evecentral import get_price
 
 REPROCESS_QUERY = """
     SELECT t2.typeName,t2.typeID,t1.quantity
@@ -28,75 +29,92 @@ ITEM_INFO_QUERY = """
         ON (t.groupID = g.groupID)
     WHERE typeName=%s
     """
-EVE_CENTRAL_QUERY="http://api.eve-central.com/api/marketstat?typeid={item}&regionlimit={region}"
-JITA_REGION_ID='10000002'
-ITEM_CACHE={}
 
+ITEM_TYPE_QUERY = """
+    SELECT b.techLevel, g.categoryID
+    FROM invTypes as t
+      INNER JOIN invBlueprintTypes as b
+        ON (t.typeID = b.productTypeID)
+      INNER JOIN invGroups as g
+        ON (t.groupID = g.groupID)
+    WHERE t.typeName=%s
+    """
 class UnknownItemException(Exception):
     pass
 
-def ItemFactory(db, name, me=0, pe=5, cache=True, part_me=0):
-    if name in ITEM_CACHE and cache:
-        item = ITEM_CACHE[name]
-        if item.me == me and item.part_me == part_me:
-            return ITEM_CACHE[name]
-        else:
-            #recreate
-            pass
-    item = ManufacturableItem(db, name, me=me, pe=pe, part_me=part_me)
-    ITEM_CACHE[name] = item
-    return item
-
+def ItemFactory(db, name, me=0, pe=5):
+    name = name.replace('_', ' ')
+    _item_type_query = db.get(ITEM_TYPE_QUERY, name)
+    if _item_type_query is None:
+        raise UnknownItemException(self.name)
+    else:
+        tech = _item_type_query.techLevel
+        category = _item_type_query.categoryID
+    is_jf = name in ['ark', 'rhea', 'anshar', 'nomad']
+    if is_jf:
+        return JFItem(db, name, "sell", me, pe)
+    elif category == 4 or category == 43:
+        return BaseMaterial(db, name, "sell", me, pe)
+    elif tech == 1:
+        return T1Item(db, name, "sell", me, pe)
+    elif tech == 2:
+        return T2Item(db, name, "sell", me, pe)
+    elif tech == 3:
+        return T3Item(db, name, "sell", me, pe)
 
 class ManufacturableItem(object):
+    """
+    Base manufacturable EVE item
 
-    def __init__(self, db, name, source="sell", me=0, pe=5, part_me=0):
-        if "_" in name:
-            self.name = name.replace('_', ' ')
-        else:
-            self.name = name
-        print "start: " + name
+    This should be subclasses for a specific type as the EVE
+    db is super akward to work with in a general way w.r.t.
+    T1/T2/T3/Capitals/JFs
+    """
+    def __init__(self, db, name, price_source="sell", me=0, pe=5):
+        self.name = name
         self.db = db
-        self.source = source
+        self.price_source = price_source
         self.me = me
         self.pe = pe
-        self.part_me = part_me
-        self.is_jf = self.name in ['ark', 'rhea', 'ahshar', 'nomad']
         _info_query = self.db.get(ITEM_INFO_QUERY, self.name)
-        if _info_query is None:
-            raise UnknownItemException(self.name)
-        self.id = _info_query.typeID
+        self._id = _info_query.typeID
         self.groupID = _info_query.groupID
         self.categoryID = _info_query.categoryID
         self.groupName = _info_query.groupName
-	try:
-        	self.packaged_size = constants.PACKAGED_SIZE[self.groupName]
-	except KeyError:
-		self.packaged_size = _info_query.volume
-        _blueprint_query = self.db.get("SELECT blueprintTypeID,wasteFactor FROM invBlueprintTypes WHERE productTypeID=%s", self.id)
+        try:
+            self.packaged_size = constants.PACKAGED_SIZE[self.groupName]
+        except KeyError:
+            self.packaged_size = _info_query.volume
+        _blueprint_query = self.db.get("SELECT blueprintTypeID,wasteFactor FROM invBlueprintTypes WHERE productTypeID=%s", self._id)
         if _blueprint_query is None:
             #probably a base material, that is cool
             #also could be a skill
             #get price off of eve central
             #TODO validate based on category that it is base mat
             #Nothing else to do!
+            self.is_manufacturable = False
             return
+        self.is_manufacturable = True
         self.blueprintID = _blueprint_query.blueprintTypeID
         self.waste_factor = _blueprint_query.wasteFactor
-        print "end: " + name
+
+    def _get_id(self, item_name):
+        _id_query = self.db.get("SELECT typeID FROM invTypes WHERE typeName=%s", item_name)
+        if _id_query is None:
+            raise UnknownItemException()
+        else:
+            return _id_query.typeID
 
     def to_dict(self):
         minsell = self.minsell
         maxbuy = self.maxbuy
         cost = self.cost
         profit = self.profit
-        minerals = self.minerals
         parts = []
         for part in self.parts:
             parts.append({
                 "name": part['name'],
                 "quantity": part['quantity'],
-                "part": part['part'].to_dict(),
             })
         return {
             "minsell": minsell,
@@ -104,16 +122,18 @@ class ManufacturableItem(object):
             "cost": cost,
             "profit": profit,
             "parts": parts,
-            "minerals": minerals,
             "packaged_size": self.packaged_size,
-            "name": self.name
+            "name": self.name,
+            "skills": self.extra_materials["skills"],
         }
 
     @property
     def base_parts(self):
+        if not self.is_manufacturable:
+            return []
         if not hasattr(self, '_base_parts'):
-            parts = self.db.query(REPROCESS_QUERY, self.id)
-            self._base_parts = [(ItemFactory(self.db, p.typeName, me=self.part_me), p.quantity) for p in parts]
+            parts = self.db.query(REPROCESS_QUERY, self._id)
+            self._base_parts = [(p.typeName, p.quantity) for p in parts]
         return self._base_parts
 
     def after_waste(self, base):
@@ -127,28 +147,9 @@ class ManufacturableItem(object):
         return int(round(base + total_waste))
 
     @property
-    def minerals(self):
-        if not hasattr(self, '_minerals'):
-            if self.categoryID == 4:
-                self._minerals = Counter()
-            else:
-                minerals = Counter()
-                for part in self.parts:
-                    if part['part'].categoryID == 4:
-                        minerals.update({part['name']: part['quantity']})
-                    if part['part'].categoryID == 43:
-                        #PI Part. Just ignore in this calc
-                        pass
-                    else:
-                        quantity = part['quantity']
-                        for i in range(quantity):
-                            minerals.update(part['part'].minerals)
-                self._minerals = minerals
-        return self._minerals
-
-
-    @property
     def extra_materials(self):
+        if not self.is_manufacturable:
+            return []
         if not hasattr(self, '_extra_materials'):
             extra_mats = {"skills": [],
                 "minerals": [],
@@ -159,31 +160,20 @@ class ManufacturableItem(object):
             for mat in _all:
                 if mat.categoryID == 16:
                     #this is a skill
-                    extra_mats["skills"].append((ItemFactory(self.db, mat.typeName, me=self.part_me), mat.quantity))
+                    extra_mats["skills"].append((mat.typeName, mat.quantity))
                 elif mat.recycle:
                     #this is a T1 required by a T2. We need to delete the reprocess cost from mat cost
-                    extra_mats["recycle"].append((ItemFactory(self.db, mat.typeName, me=self.part_me), mat.quantity))
+                    extra_mats["recycle"].append((mat.typeName, mat.quantity))
                 else:
                     #Just a normal extra mat
-                    if mat.categoryID == 17:
-                        #This is a "commodity" so something we can calc profit on aka part
-                        extra_mats["parts"].append((ItemFactory(self.db, mat.typeName, me=self.part_me), mat.quantity, mat.damagePerJob))
-                    elif mat.categoryID == 4:
-                        #This is a mineral
-                        extra_mats["minerals"].append((ItemFactory(self.db, mat.typeName, me=self.part_me), mat.quantity, mat.damagePerJob))
+                    extra_mats["parts"].append(((mat.typeName, mat.quantity, mat.damagePerJob)))
             self._extra_materials = extra_mats
         return self._extra_materials
 
     @property
     def prices(self):
         if not hasattr(self, "_prices"):
-            shitxml = requests.get(EVE_CENTRAL_QUERY.format(item=self.id, region=JITA_REGION_ID))
-            rootshit = ET.fromstring(shitxml.text)
-            item = rootshit[0][0]
-            prices = {"maxbuy": float(item.find('buy').find('max').text),
-                    "minsell": float(item.find('sell').find('min').text),
-            }
-            self._prices = prices
+            self._prices = get_price(self._id)
         return self._prices
 
     @property
@@ -195,59 +185,6 @@ class ManufacturableItem(object):
         return self.prices['minsell']
 
     @property
-    def parts(self):
-        if not hasattr(self, '_parts'):
-            if self.categoryID == 4 or self.categoryID == 43:
-                #This is a mineral or a PI result
-                self._parts = []
-            else:
-                parts = []
-                minerals_to_remove = defaultdict(int)
-                for item,quantity in self.extra_materials['recycle']:
-                    #Assume pe5 for extra material waste
-                    for part in item.parts:
-                        if self.is_jf:
-                            parts.append(part)
-                        minerals_to_remove[part['name']] += part['quantity']
-
-                for part,quantity in self.base_parts:
-                    quantity = self.after_waste(quantity)
-                    if part.name in minerals_to_remove:
-                        new_total = quantity - minerals_to_remove[part.name]
-                        if new_total > 0:
-                            parts.append({
-                                "name": part.name,
-                                "quantity": new_total,
-                                "part": ItemFactory(self.db, part.name, me=self.part_me)
-                            })
-                    else:
-                        parts.append({
-                            "name": part.name,
-                            "quantity": quantity,
-                            "part": ItemFactory(self.db, part.name, me=self.part_me)
-                        })
-
-                for part,quantity,damage in self.extra_materials['parts']:
-                    #ignore damage. small opimization that only leads to extra profit
-                    #as long as the items are repaired instead of rebuild
-                    parts.append({
-                        "name": part.name,
-                        "quantity": quantity,
-                        "part": ItemFactory(self.db, part.name, me=self.part_me)
-                    })
-
-                for part,quantity,__damage in self.extra_materials['minerals']:
-                    #ignore damage these are minerals
-                    parts.append({
-                        "name": part.name,
-                        "quantity": quantity,
-                        "part": ItemFactory(self.db, part.name, me=self.part_me)
-                    })
-
-                self._parts = parts
-        return self._parts
-
-    @property
     def cost(self):
         if not hasattr(self, '_cost'):
             if self.categoryID == 4:
@@ -255,27 +192,186 @@ class ManufacturableItem(object):
                 self._cost = self.minsell
             else:
                 total = 0
-                if self.source=='sell':
+                if self.price_source=='sell':
                     for part in self.parts:
                         item_name = part['name']
                         quantity = part['quantity']
-                        item = ItemFactory(self.db, item_name, me=self.part_me)
-                        total += item.minsell * (quantity)
-                if self.source=='buy':
+                        item_cost = part['price']['minsell']
+                        total += item_cost * (quantity)
+                if self.price_source=='buy':
                     for part in self.parts:
                         item_name = part['name']
                         quantity = part['quantity']
-                        item = ItemFactory(self.db, item_name, me=self.part_me)
-                        total += item.minsell * (quantity)
+                        item_cost = part['price']['maxbuy']
+                        total += item_cost * (quantity)
                 self._cost = total
         return self._cost
 
     @property
+    def parts(self):
+        if not hasattr(self, '_parts'):
+            self._parts = self.get_parts()
+        return self._parts
+
+    def get_parts(self):
+        raise NotImplementedError
+    @property
     def profit(self):
         return self.minsell - self.cost
 
+class BaseMaterial(ManufacturableItem):
+    """
+    Minerals and PI mats have no parts
+    """
+    def get_parts(self):
+        return []
+
+class JFItem(ManufacturableItem):
+    """
+    Jump Freighters
+
+    they are awkwardly subtley different than other T2 items
+    """
+    def get_parts(self):
+        parts = []
+        for item,quantity in self.extra_materials['recycle']:
+            #Assume pe5 for extra material waste
+            for part in item.parts:
+                parts.append({
+                    "name": part,
+                    "quantity": quantity,
+                    "price": get_price(self._get_id(item))
+                })
+
+        for part,quantity in self.base_parts:
+            quantity = self.after_waste(quantity)
+            if part in minerals_to_remove:
+                new_total = quantity - minerals_to_remove[part]
+                if new_total > 0:
+                    parts.append({
+                        "name": part,
+                        "quantity": quantity,
+                        "price": get_price(self._get_id(part))
+                    })
+            else:
+                parts.append({
+                    "name": part,
+                    "quantity": quantity,
+                    "price": get_price(self._get_id(part))
+                })
+        for part,quantity,damage in self.extra_materials['parts']:
+            #ignore damage. small opimization that only leads to extra profit
+            #as long as the items are repaired instead of rebuild
+            parts.append({
+                "name": part,
+                "quantity": quantity,
+                "price": get_price(self._get_id(part))
+            })
+        for item,quantity in self.extra_materials['recycle']:
+            #Assume pe5 for extra material waste
+            for part in item.parts:
+                minerals_to_remove[part['name']] += part['quantity']
+
+class T1Item(ManufacturableItem):
+    """
+    T1 Manufacturable Item
+    """
+    def get_parts(self):
+        parts = []
+        for part,quantity in self.base_parts:
+            quantity = self.after_waste(quantity)
+            parts.append({
+                "name": part,
+                "quantity": quantity,
+                "price": get_price(self._get_id(part))
+            })
+        for part,quantity,damage in self.extra_materials['parts']:
+            #ignore damage. small opimization that only leads to extra profit
+            #as long as the items are repaired instead of rebuild
+            parts.append({
+                "name": part,
+                "quantity": quantity,
+                "price": get_price(self._get_id(part))
+            })
+        return parts
+
+class T2Item(ManufacturableItem):
+    """
+    T2 Manufacturable Item
+    """
+    def get_parts(self):
+        parts = []
+        minerals_to_remove = defaultdict(int)
+        for item,quantity in self.extra_materials['recycle']:
+            #Assume pe5 for extra material waste
+            for part in item.parts:
+                minerals_to_remove[part['name']] += part['quantity']
+
+        for part,quantity in self.base_parts:
+            quantity = self.after_waste(quantity)
+            if part in minerals_to_remove:
+                new_total = quantity - minerals_to_remove[part]
+                if new_total > 0:
+                    parts.append({
+                        "name": part,
+                        "quantity": quantity,
+                        "price": get_price(self._get_id(part))
+                    })
+            else:
+                parts.append({
+                    "name": part,
+                    "quantity": quantity,
+                    "price": get_price(self._get_id(part))
+                })
+        for part,quantity,damage in self.extra_materials['parts']:
+            #ignore damage. small opimization that only leads to extra profit
+            #as long as the items are repaired instead of rebuild
+            parts.append({
+                "name": part,
+                "quantity": quantity,
+                "price": get_price(self._get_id(part))
+            })
+
+class T3Item(ManufacturableItem):
+    """
+    T2 Manufacturable Item
+    """
+    def get_parts(self):
+        parts = []
+        minerals_to_remove = defaultdict(int)
+        for item,quantity in self.extra_materials['recycle']:
+            #Assume pe5 for extra material waste
+            for part in item.parts:
+                minerals_to_remove[part['name']] += part['quantity']
+
+        for part,quantity in self.base_parts:
+            quantity = self.after_waste(quantity)
+            if part in minerals_to_remove:
+                new_total = quantity - minerals_to_remove[part]
+                if new_total > 0:
+                    parts.append({
+                        "name": part,
+                        "quantity": quantity,
+                        "price": get_price(self._get_id(part))
+                    })
+            else:
+                parts.append({
+                    "name": part,
+                    "quantity": quantity,
+                    "price": get_price(self._get_id(part))
+                })
+        for part,quantity,damage in self.extra_materials['parts']:
+            #ignore damage. small opimization that only leads to extra profit
+            #as long as the items are repaired instead of rebuild
+            parts.append({
+                "name": part,
+                "quantity": quantity,
+                "price": get_price(self._get_id(part))
+            })
+
 def main():
-    db = Connection('localhost', 'evedump', user='eve', password='4Td#xA3c.0)J;Ni_k$(E')
+    from torndb import Connection
+    db = Connection('localhost', 'evedump', user='eve', password='eeph5aimohtheejieg1B')
 
     item = ItemFactory(db,sys.argv[1])
     print item.cost

@@ -16,13 +16,10 @@ class BaseHandler(web.RequestHandler):
 class ItemHandler(BaseHandler):
     def get(self, item):
         me = int(self.get_argument('me', 0))
-        cache = bool(self.get_argument('cache', True))
-        part_me = int(self.get_argument('part_me', 0))
-        logging.info("item: %s", item)
-        logging.info("me: %s, cache: %s", me, cache)
-        item = ItemFactory(self.db, item, me=me, cache=cache, part_me=me)
+        logging.info("item: %s me: %s", item, me)
+        item = ItemFactory(self.db, item, me=me)
         item_dict = item.to_dict()
-        self.write(json.dumps(item_dict, indent=4))
+        self.write(json.dumps(item_dict, indent=4, sort_keys=True))
 
 if __name__ == "__main__":
     logging.getLogger().setLevel(logging.INFO)

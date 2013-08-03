@@ -1,10 +1,14 @@
-angular.module('evetools', []).config(function($routeProvider) {
+angular.module('evetools', ['ui.bootstrap', 'uiSlider', 'ngResource']).config(function($routeProvider) {
 	$routeProvider.
 		when('/', {controller:MainCtrl, templateUrl:'main.html'}).
 		when('/item', {controller:ItemCtrl, templateUrl:'item.html'}).
 		when('/contact', {controller:ContactCtrl, templateUrl:'contact.html'}).
 		otherwise({redirectTo:'/'});
 	});
+
+var Item = $resource('/item/:item_name/',
+				{item_name:'@item', me:2});
+
 
 function ContactCtrl($scope){
 }

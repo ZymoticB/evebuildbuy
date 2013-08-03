@@ -11,23 +11,33 @@
 	<div class="row" ng-controller="ItemCtrl">
 		<div class="span3">
 			<label>Item:</label>
-			<input type="text" ng-model="itemName" placeholder="Item Name">
+			<input type="text" ng-model="itemName" placeholder="Item Name" autocomplete="on">
 			<label>Item ME:</label>
-			<input type="text" ng-model="itemME">
-			<label>Part ME:</label>
-			<input type="text" ng-model="partME">
+			<slider class="span1" floor="0" ceiling="500" step="1" precision="0" ng-model="itemME"></slider>
+			<input type="text" class="span1" ng-model="itemME" value="0">
+			<div class="btn-group">
+				<button class="btn">Build</button>
+				<button class="btn dropdown-toggle" data-toggle="dropdown" data-target="#">
+					<spbuttonn class="caret"></span>
+				</button>
+				<ul class="dropdown-menu">
+					<li>
+						<a>
+						Build
+						</a>
+					</li>
+					<li>
+						<a>
+						Build/Buy
+						</a>
+					</li>
+				</ul>
+			</div>
 		</div>
 		<div class="span9">
-			<h3> {{itemName}} </h3>
-			<p>ME: {{itemME}} PE: 5</p>
-			<ul>
-				<li>Part 1: ME: {{partME}} PE: 5</li>
-			<ul>
 		</div>
 	</div>
-
 	<hr>
-
 	<div class="footer">
 		<p>&copy; Zymoticb 2013</p>
 	</div>
